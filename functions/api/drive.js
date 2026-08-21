@@ -1,53 +1,34 @@
-
-// functions/api/drive.js - FINAL SECURE CORE
-// Private Drive, Public Site - No folderId leak
-// Jim Koto - Kesadaran Adalah Anugerah
-
-import { google } from 'googleapis';
-
-export async function onRequestGet(context) {
-  try {
-    const { env } = context;
-    const FOLDER_ID = env.DRIVE_FOLDER_ID;
-    const SA_JSON = env.GOOGLE_SERVICE_ACCOUNT_JSON;
-
-    if (!FOLDER_ID || !SA_JSON) {
-      return new Response(JSON.stringify({ error: "Config missing" }), { status: 500 });
-    }
-
-    // Parse service account - never log this
-    const credentials = typeof SA_JSON === 'string' ? JSON.parse(SA_JSON) : SA_JSON;
-
-    const auth = new google.auth.JWT({
-      email: credentials.client_email,
-      key: credentials.private_key,
-      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-    });
-
-    const drive = google.drive({ version: 'v3', auth });
-
-    const res = await drive.files.list({
-      q: `'${FOLDER_ID}' in parents and trashed = false`,
-      fields: 'files(id,name,mimeType,thumbnailLink,webViewLink,createdTime)',
-      orderBy: 'createdTime desc',
-      pageSize: 50,
-    });
-
-    // Return only safe public fields, NEVER return folderId
-    const files = (res.data.files || []).map(f => ({
-      id: f.id,
-      name: f.name,
-      mimeType: f.mimeType,
-      thumbnail: f.thumbnailLink,
-      viewLink: f.webViewLink,
-      created: f.createdTime,
-    }));
-
-    return new Response(JSON.stringify({ files, count: files.length, secured: true }), {
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }
-    });
-
-  } catch (e) {
-    return new Response(JSON.stringify({ error: "Vault locked", details: e.message }), { status: 500 });
-  }
+export async function onRequest(context) {
+  const DRIVE_FOLDER_ID = context.env.DRIVE_FOLDER_ID;
+  const SA_JSON = context.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!DRIVE_FOLDER_ID || !SA_JSON) return new Response("Missing env", {status: 500});
+  
+  const sa = JSON.parse(SA_JSON);
+  const token = await getAccessToken(sa);
+  
+  const url = `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER_ID}'+in+parents&fields=files(id,name,mimeType,webViewLink)&orderBy=name`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const data = await r.json();
+  return new Response(JSON.stringify(data.files), { headers: {"Content-Type":"application/json", "Access-Control-Allow-Origin":"*"} });
 }
+
+async function getAccessToken(sa) {
+  const header = btoa(JSON.stringify({alg:"RS256",typ:"JWT"})).replace(/=/g,"");
+  const now = Math.floor(Date.now()/1000);
+  const claim = btoa(JSON.stringify({
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/drive.readonly",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now
+  })).replace(/=/g,"");
+  
+  const key = await crypto.subtle.importKey("pkcs8", str2ab(atob(sa.private_key.replace(/-----[^-]+-----/g,"").replace(/\n/g,""))), {name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"}, false, ["sign"]);
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(`${header}.${claim}`));
+  const jwt = `${header}.${claim}.${btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")}`;
+  
+  const res = await fetch("https://oauth2.googleapis.com/token", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`});
+  const j = await res.json();
+  return j.access_token;
+}
+function str2ab(s){const b=new Uint8Array(s.length);for(let i=0;i<s.length;i++)b[i]=s.charCodeAt(i);return b.buffer;}
