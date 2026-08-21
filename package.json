@@ -1,0 +1,8 @@
+{
+  "name": "jimkoto-vault",
+  "version": "1.0.0-final-vibrant",
+  "description": "Jim Koto - Kesadaran Adalah Anugerah - Private Drive Public Site - Vibrant Energetic",
+  "dependencies": {
+    "googleapis": "^126.0.0"
+  }
+}
